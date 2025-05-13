@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ET Deadline Calculator</title>
+  <style>
+    /* ----------- Dark‑mode base palette ----------- */
+    :root {
+      --bg: #111827;          /* gray‑900 */
+      --bg‑alt: #1f2937;      /* gray‑800 */
+      --border: #374151;      /* gray‑700 */
+      --text: #f9fafb;        /* gray‑50  */
+      --text‑muted: #9ca3af;  /* gray‑400 */
+      --primary: #3b82f6;     /* blue‑500 */
+      --primary‑hover:#2563eb;/* blue‑600 */
+      --danger: #dc2626;      /* red‑600  */
+      --ec: #2563eb;          /* same as primary for EC shading */
+      --event: #f59e0b;       /* amber‑500 */
+    }
+
+    body {margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--text);}
+    .container{max-width:680px;margin:auto;padding:1rem;}
+    h1,h2{margin:.5rem 0;text-align:center;}
+    section,label,table{width:100%;}
+    label{display:block;margin-bottom:.75rem;}
+    input,select{width:100%;padding:.45rem .6rem;margin-top:.25rem;border:1px solid var(--border);border-radius:.375rem;font-size:1rem;background:var(--bg‑alt);color:var(--text);}    
+    table{border-collapse:collapse;margin-bottom:1rem;width:100%;}
+    th,td{border:1px solid var(--border);padding:.5rem;text-align:left;}
+    th{background:var(--bg‑alt);font-weight:600;}
+    button{background:var(--primary);color:#fff;border:none;padding:.6rem 1rem;border-radius:.5rem;font-size:1rem;cursor:pointer;margin-right:.5rem;}
+    button.secondary{background:var(--border);}button:disabled{background:var(--text‑muted);cursor:not-allowed;}@media(hover:hover){button:hover:not(:disabled){background:var(--primary‑hover);}}
+
+    #resultsTable td.highlight{background:#065f46;color:#ecfdf5;} /* emerald‑700 / emerald‑50 */
+
+    /* Calendar */
+    #calendar{display:grid;gap:1.5rem;margin-top:1rem;}
+    .month{border:1px solid var(--border);}
+    .month h3{margin:0;background:var(--bg‑alt);padding:.5rem;text-align:center;}
+    .cal{width:100%;border-collapse:collapse;}
+    .cal th,.cal td{width:14.285%;height:40px;text-align:center;border:1px solid var(--border);}
+    .cal th{font-weight:600;font-size:.85rem;background:var(--bg‑alt);}    
+    .ec{background:var(--ec);color:#fff;}
+    .event{background:var(--event);color:#000;font-weight:600;}
+    .deadline{background:var(--danger);color:#fff;font-weight:700;}
+
+    footer{margin-top:2rem;font-size:.85rem;color:var(--text‑muted);text-align:center;}
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>Employment Tribunal Deadline Calculator</h1>
+
+  <section>
+    <label>Primary event date (EDT or last discriminatory act)
+      <input type="date" id="eventDate" required>
+    </label>
+    <label>Claim type
+      <select id="claimType">
+        <option value="ud">Unfair Dismissal (3 months – 1 day)</option>
+        <option value="disc">Discrimination (3 months – 1 day)</option>
+      </select>
+    </label>
+  </section>
+
+  <h2>Respondents &amp; ACAS Early Conciliation</h2>
+  <table id="respondentTable">
+    <thead>
+      <tr><th>Name</th><th>EC start date</th><th>Certificate date</th><th>Remove</th></tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <button id="addRow" class="secondary">Add Respondent</button>
+
+  <div style="text-align:center;margin:1.5rem 0;">
+    <button id="compute">Compute Deadlines</button>
+  </div>
+
+  <h2>Results</h2>
+  <table id="resultsTable"></table>
+  <p id="earliest" style="font-weight:600;"></p>
+  <p id="daysRemaining"></p>
+
+  <h2>Calendar view</h2>
+  <div id="calendar"></div>
+
+  <footer>Private tool – logic based on ERA 1996 s.207B. No warranty.</footer>
+</div>
+
+<script>
+(function(){
+  const MS_DAY = 24*60*60*1000;
+  const tableBody = document.querySelector('#respondentTable tbody');
+  document.getElementById('addRow').addEventListener('click', addRow);
+  document.getElementById('compute').addEventListener('click', compute);
+  addRow(); // initial row
+
+  function addRow(){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" placeholder="Respondent" required></td>
+      <td><input type="date" required></td>
+      <td><input type="date" required></td>
+      <td style="text-align:center;"><button class="secondary" onclick="this.closest('tr').remove()">✕</button></td>`;
+    tableBody.appendChild(tr);
+  }
+
+  function parseDate(val){return val?new Date(val+'T00:00'):null;}
+  function addMonths(d,n){const r=new Date(d);r.setMonth(r.getMonth()+n);return r;}
+  function diffDays(start,end){return Math.floor((end-start)/MS_DAY);}
+  function formatDate(d){return d.toISOString().split('T')[0];}
+
+  function compute(){
+    const eventRaw=document.getElementById('eventDate').value;
+    if(!eventRaw){alert('Enter the primary event date');return;}
+    const eventDate=parseDate(eventRaw);
+    const primaryDeadline=addMonths(eventDate,3);primaryDeadline.setDate(primaryDeadline.getDate()-1);
+    const clockStart=new Date(eventDate.getTime()+MS_DAY);
+
+    const rows=Array.from(tableBody.querySelectorAll('tr'));
+    if(!rows.length){alert('Add at least one respondent');return;}
+
+    const results=document.getElementById('resultsTable');results.innerHTML='';
+    results.insertAdjacentHTML('beforeend','<tr><th>Respondent</th><th>Final Deadline</th><th>Method</th></tr>');
+
+    let earliest=null;
+    const ecRanges=[]; // for calendar
+    const deadlines=[]; // store per respondent
+
+    rows.forEach(r=>{
+      const name=r.cells[0].querySelector('input').value.trim()||'Unnamed';
+      const ecStart=parseDate(r.cells[1].querySelector('input').value);
+      const ecCert=parseDate(r.cells[2].querySelector('input').value);
+      if(!ecStart||!ecCert)return;
+
+      // Build EC range array
+      ecRanges.push({start:ecStart,end:ecCert});
+
+      const pauseStart=new Date(Math.max(ecStart.getTime()+MS_DAY,clockStart.getTime()));
+      const pauseEnd=ecCert;
+      let pauseDays=0;
+      if(pauseEnd>=pauseStart) pauseDays=diffDays(pauseStart,pauseEnd)+1;
+      let deadline=new Date(primaryDeadline.getTime()+pauseDays*MS_DAY);
+      let method=pauseDays?`Primary + ${pauseDays}‑day pause`:'Primary limit';
+      if(primaryDeadline>=ecStart&&primaryDeadline<=ecCert){
+        const alt=addMonths(ecCert,1);
+        if(alt>deadline){deadline=alt;method='One‑month rule';}
+      }
+      results.insertAdjacentHTML('beforeend',`<tr><td>${name}</td><td>${formatDate(deadline)}</td><td>${method}</td></tr>`);
+      if(!earliest||deadline<earliest)earliest=deadline;
+      deadlines.push(deadline);
+    });
+
+    // Highlight earliest rows
+    Array.from(results.querySelectorAll('tr')).forEach(tr=>{
+      const dCell=tr.cells[1];if(dCell&&dCell.textContent===formatDate(earliest))dCell.classList.add('highlight');
+    });
+
+    const earliestP=document.getElementById('earliest');
+    earliestP.textContent=earliest?`Earliest final deadline (safe date for single ET1): ${formatDate(earliest)}`:'';
+
+    const today=new Date();today.setHours(0,0,0,0);
+    const remaining=earliest?Math.max(diffDays(today,earliest)-1,0):null;
+    document.getElementById('daysRemaining').textContent=remaining!==null?`Days remaining (excluding deadline day): ${remaining}`:'';
+
+    buildCalendar(eventDate,earliest,ecRanges,deadlines,formatDate(eventDate));
+  }
+
+  function buildCalendar(eventDate,earliest,ecRanges,deadlines,eventISO){
+    const calContainer=document.getElementById('calendar');calContainer.innerHTML='';
+    if(!earliest)return;
+    // build months from event month to earliest deadline month inclusive
+    const start=new Date(eventDate.getFullYear(),eventDate.getMonth(),1);
+    const end=new Date(earliest.getFullYear(),earliest.getMonth(),1);
+
+    for(let d=new Date(start);d<=end;d.setMonth(d.getMonth()+1)){
+      const monthStart=new Date(d);
+      const monthEnd=new Date(d.getFullYear(),d.getMonth()+1,0);
+
+      // create table
+      const monthDiv=document.createElement('div');monthDiv.className='month';
+      monthDiv.innerHTML=`<h3>${monthStart.toLocaleString('default',{month:'long',year:'numeric'})}</h3>`;
+      const table=document.createElement('table');table.className='cal';
+      const headerRow=document.createElement('tr');
+      const weekdays=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+      weekdays.forEach(w=>{const th=document.createElement('th');th.textContent=w;headerRow.appendChild(th);});
+      table.appendChild(headerRow);
+
+      // pad to first Monday
+      let row=document.createElement('tr');
+      let day=new Date(monthStart);
+      let pad=(day.getDay()+6)%7; // JS Sunday=0, convert to Monday=0
+      for(let i=0;i<pad;i++){row.appendChild(document.createElement('td'));}
+
+      for(;day<=monthEnd;day.setDate(day.getDate()+1)){
+        if(row.children.length===7){table.appendChild(row);row=document.createElement('tr');}
+        const td=document.createElement('td');
+        td.textContent=day.getDate();
+        const iso=formatDate(day);
+        // highlight logic
+        if(iso===eventISO)td.classList.add('event');
+        if(deadlines.map(formatDate).includes(iso))td.classList.add('deadline');
+        ecRanges.forEach(rg=>{
+          if(day>=rg.start&&day<=rg.end)td.classList.add('ec');
+        });
+        row.appendChild(td);
+      }
+      // fill remaining cells
+      while(row.children.length<7){row.appendChild(document.createElement('td'));}
+      table.appendChild(row);
+      monthDiv.appendChild(table);
+      calContainer.appendChild(monthDiv);
+    }
+  }
+})();
+</script>
+</body>
+</html>
